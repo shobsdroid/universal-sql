@@ -1,0 +1,127 @@
+{
+    "name": "plan_and_entitle",
+    "context": {
+        "trace_id": "0x0db9e953a50c5a9dae8fee3df2039eee",
+        "span_id": "0xda1a996c640a497d",
+        "trace_state": "[]"
+    },
+    "kind": "SpanKind.INTERNAL",
+    "parent_id": "0x55bfd10d73a3c89d",
+    "start_time": "2026-05-29T09:50:44.679388Z",
+    "end_time": "2026-05-29T09:50:44.691065Z",
+    "status": {
+        "status_code": "UNSET"
+    },
+    "attributes": {},
+    "events": [],
+    "links": [],
+    "resource": {
+        "attributes": {
+            "telemetry.sdk.language": "python",
+            "telemetry.sdk.name": "opentelemetry",
+            "telemetry.sdk.version": "1.25.0",
+            "service.name": "unknown_service"
+        },
+        "schema_url": ""
+    }
+}
+{
+    "name": "connector.execute:github",
+    "context": {
+        "trace_id": "0x0db9e953a50c5a9dae8fee3df2039eee",
+        "span_id": "0x02a6480332c090fc",
+        "trace_state": "[]"
+    },
+    "kind": "SpanKind.INTERNAL",
+    "parent_id": "0x55bfd10d73a3c89d",
+    "start_time": "2026-05-29T09:50:44.692272Z",
+    "end_time": "2026-05-29T09:50:44.814743Z",
+    "status": {
+        "status_code": "UNSET"
+    },
+    "attributes": {
+        "connector": "github",
+        "table": "pull_requests",
+        "cache_hit": false,
+        "rows_fetched": 7,
+        "freshness_ms": 0
+    },
+    "events": [],
+    "links": [],
+    "resource": {
+        "attributes": {
+            "telemetry.sdk.language": "python",
+            "telemetry.sdk.name": "opentelemetry",
+            "telemetry.sdk.version": "1.25.0",
+            "service.name": "unknown_service"
+        },
+        "schema_url": ""
+    }
+}
+{
+    "name": "connector.execute:jira",
+    "context": {
+        "trace_id": "0x0db9e953a50c5a9dae8fee3df2039eee",
+        "span_id": "0x9c459648ee03a168",
+        "trace_state": "[]"
+    },
+    "kind": "SpanKind.INTERNAL",
+    "parent_id": "0x55bfd10d73a3c89d",
+    "start_time": "2026-05-29T09:50:44.692480Z",
+    "end_time": "2026-05-29T09:50:44.853396Z",
+    "status": {
+        "status_code": "UNSET"
+    },
+    "attributes": {
+        "connector": "jira",
+        "table": "issues",
+        "cache_hit": false,
+        "rows_fetched": 10,
+        "freshness_ms": 0
+    },
+    "events": [],
+    "links": [],
+    "resource": {
+        "attributes": {
+            "telemetry.sdk.language": "python",
+            "telemetry.sdk.name": "opentelemetry",
+            "telemetry.sdk.version": "1.25.0",
+            "service.name": "unknown_service"
+        },
+        "schema_url": ""
+    }
+}
+{
+    "name": "query",
+    "context": {
+        "trace_id": "0x0db9e953a50c5a9dae8fee3df2039eee",
+        "span_id": "0x55bfd10d73a3c89d",
+        "trace_state": "[]"
+    },
+    "kind": "SpanKind.INTERNAL",
+    "parent_id": null,
+    "start_time": "2026-05-29T09:50:44.678163Z",
+    "end_time": "2026-05-29T09:50:44.855109Z",
+    "status": {
+        "status_code": "UNSET"
+    },
+    "attributes": {
+        "trace_id": "0c7792c6d1eb4a37",
+        "tenant_id": "acme-corp",
+        "role": "admin",
+        "plan_type": "federated_join",
+        "rows_returned": 7,
+        "partial": false
+    },
+    "events": [],
+    "links": [],
+    "resource": {
+        "attributes": {
+            "telemetry.sdk.language": "python",
+            "telemetry.sdk.name": "opentelemetry",
+            "telemetry.sdk.version": "1.25.0",
+            "service.name": "unknown_service"
+        },
+        "schema_url": ""
+    }
+}

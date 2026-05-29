@@ -1,0 +1,12 @@
+# Multi-tenant (default): one shared cluster, namespace-per-tenant isolation.
+environment           = "staging"
+region                = "us-east-1"
+deployment_mode       = "multi_tenant"
+data_residency_region = "us-east-1"
+node_min              = 3
+node_max              = 20
+
+# Single-tenant (enterprise): same modules, dedicated cluster per tenant.
+# deployment_mode       = "single_tenant"
+# tenant_id             = "acme-corp"
+# data_residency_region = "eu-west-1"   # drives storage + job placement

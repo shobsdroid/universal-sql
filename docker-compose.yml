@@ -1,0 +1,74 @@
+# Observability stack for the screenshot deliverable.
+#
+#   docker compose up --build
+#
+# Then open:
+#   - Grafana dashboard : http://localhost:3000   (anonymous admin, opens on the board)
+#   - Jaeger traces     : http://localhost:16686  (service "universal-sql")
+#   - Raw metrics       : http://localhost:8099/metrics
+#
+# The `loadgen` service drives steady mixed traffic (single-source, joins, cache
+# hits) so the dashboard + traces populate with no manual querying.
+name: universal-sql
+
+services:
+  app:
+    build: .
+    environment:
+      USQL_JWT_SECRET: demo-shared-secret          # shared with loadgen
+      USQL_TRACE_CONSOLE: "0"                       # export to Jaeger, not stdout
+      USQL_RATELIMIT_RPM_MULTIPLIER: "100000"       # don't throttle the demo traffic
+      USQL_DEV_TOKEN_ENDPOINT: "1"                  # let the bundled UI mint JWTs in-browser
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+    env_file:
+      # Live connector credentials (optional). Without this file the live
+      # connectors stay unregistered and the mocks alone serve traffic.
+      - path: .env.live
+        required: false
+    ports:
+      - "8099:8099"
+    depends_on:
+      - jaeger
+
+  loadgen:
+    build: .
+    command: python load/demo_traffic.py
+    environment:
+      USQL_JWT_SECRET: demo-shared-secret           # must match app to mint valid tokens
+      BASE_URL: http://app:8099
+    volumes:
+      - ./load:/app/load:ro
+    depends_on:
+      - app
+
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    volumes:
+      - ./ops/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      - app
+
+  grafana:
+    image: grafana/grafana:11.0.0
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/universal-sql.json
+    volumes:
+      - ./ops/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./ops/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"   # UI
+      - "4318:4318"     # OTLP HTTP ingest

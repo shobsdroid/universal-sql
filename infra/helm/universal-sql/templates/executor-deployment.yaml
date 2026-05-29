@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: usql-executor
+  labels:
+    app: universal-sql
+    component: executor
+    deployment-mode: {{ .Values.deploymentMode }}
+    tenant: {{ .Values.tenantId | default "shared" | quote }}
+spec:
+  replicas: {{ .Values.executor.replicas }}
+  selector:
+    matchLabels:
+      app: universal-sql
+      component: executor
+  template:
+    metadata:
+      labels:
+        app: universal-sql
+        component: executor
+    spec:
+      containers:
+        - name: executor
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          env:
+            - name: USQL_REDIS_ENDPOINT
+              value: {{ .Values.config.redisEndpoint | quote }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.config.otelEndpoint | quote }}
+          resources:
+            {{- toYaml .Values.executor.resources | nindent 12 }}

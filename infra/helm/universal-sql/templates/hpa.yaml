@@ -1,0 +1,25 @@
+{{- range $c := list "gateway" "executor" }}
+{{- $cfg := index $.Values $c }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: usql-{{ $c }}
+  labels:
+    app: universal-sql
+    component: {{ $c }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: usql-{{ $c }}
+  minReplicas: {{ $cfg.hpa.minReplicas }}
+  maxReplicas: {{ $cfg.hpa.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ $cfg.hpa.targetCPUUtilizationPercentage }}
+---
+{{- end }}

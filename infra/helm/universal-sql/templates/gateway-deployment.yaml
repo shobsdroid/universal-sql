@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: usql-gateway
+  labels:
+    app: universal-sql
+    component: gateway
+    deployment-mode: {{ .Values.deploymentMode }}
+    tenant: {{ .Values.tenantId | default "shared" | quote }}
+spec:
+  replicas: {{ .Values.gateway.replicas }}
+  selector:
+    matchLabels:
+      app: universal-sql
+      component: gateway
+  template:
+    metadata:
+      labels:
+        app: universal-sql
+        component: gateway
+    spec:
+      containers:
+        - name: gateway
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          ports:
+            - containerPort: 8099
+          env:
+            - name: USQL_DEPLOYMENT_MODE
+              value: {{ .Values.deploymentMode | quote }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.config.otelEndpoint | quote }}
+            - name: USQL_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.config.jwtSecretRef }}
+                  key: secret
+          resources:
+            {{- toYaml .Values.gateway.resources | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8099

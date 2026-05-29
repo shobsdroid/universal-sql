@@ -1,0 +1,41 @@
+Load test results (local, MacBook — load generator co-located with the server)
+==============================================================================
+
+Tooling: load/query_load.js (k6, the intended tool) + load/load_local.py
+(dependency-light asyncio fallback used to produce the numbers below, since k6
+was not installed on the test machine).
+
+Query under test (single-source, predicate-pushdown, L1-cache-hit heavy):
+    SELECT pr.id, pr.state FROM github.pull_requests pr
+    WHERE pr.state = 'open' LIMIT 10
+
+Server: uvicorn, USQL_RATELIMIT_RPM_MULTIPLIER=100000 (so the limiter does not
+throttle the load generator), USQL_TRACE_CONSOLE=0.
+
+
+1) Latency of the hot path (1 worker, concurrency = 1)
+   throughput:  ~249 req/s
+   p50:         3.9 ms
+   p95:         4.6 ms
+   p99:         6.2 ms
+   errors:      0
+   -> gateway + planner + entitlement + L1 cache hit is single-digit ms.
+
+2) Sustained throughput (4 uvicorn workers, 4 parallel client processes)
+   AGGREGATE throughput: 586 req/s
+   p50 (per client):     ~90 ms      (machine saturated: 4 server + 4 client
+   p95 (per client):     ~526 ms      processes contending for 8 laptop cores)
+   errors:               0
+
+Notes / honesty
+---------------
+- The ceiling here is the co-located, single-process Python load client, not the
+  service: planning CPU alone benchmarks at ~27k req/s/core after AST + policy
+  caching, and the server answers a single request in ~4 ms.
+- The design targets 1k QPS via horizontal scaling (stateless data plane, HPA,
+  ~50 gateway + ~25 executor pods — design doc §14). Locally we demonstrate
+  ~586 req/s with zero errors, which clears the THP's ~500 QPS lower bound.
+- Reproduce with k6:
+    USQL_RATELIMIT_RPM_MULTIPLIER=100000 USQL_TRACE_CONSOLE=0 \
+      uvicorn src.main:app --port 8099 --workers 4
+    TOKEN=$(python -m src.auth eng acme-corp) k6 run -e TOKEN=$TOKEN load/query_load.js

@@ -1,0 +1,44 @@
+# Entitlement policy: role -> per-table RLS row filters + CLS masks/blocks.
+# Merged with source permissions at plan time and compiled into the query plan
+# BEFORE any connector is called (least-privilege; no over-fetch-then-filter).
+#
+# Demo contrast:
+#   role "eng"   -> sees only ENG/PLATFORM Jira + acme/api,acme/frontend repos;
+#                   author_email masked; internal_notes blocked.
+#   role "admin" -> sees everything, unmasked.
+
+roles:
+  eng:
+    can_access:
+      - github.pull_requests
+      - jira.issues
+      - linear.issues
+      - gh_live.pull_requests
+      - jira_live.issues
+    tables:
+      github.pull_requests:
+        row_filter: "repo_name IN ('acme/api', 'acme/frontend')"
+        masks:
+          author_email: mask_email
+      jira.issues:
+        row_filter: "project_key IN ('ENG', 'PLATFORM')"
+        blocked:
+          - internal_notes
+      linear.issues:
+        row_filter: "team_key IN ('ENG', 'PLATFORM')"
+      gh_live.pull_requests: {}
+      jira_live.issues: {}
+
+  admin:
+    can_access:
+      - github.pull_requests
+      - jira.issues
+      - linear.issues
+      - gh_live.pull_requests
+      - jira_live.issues
+    tables:
+      github.pull_requests: {}
+      jira.issues: {}
+      linear.issues: {}
+      gh_live.pull_requests: {}
+      jira_live.issues: {}

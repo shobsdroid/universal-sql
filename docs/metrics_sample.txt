@@ -1,0 +1,12 @@
+usql_query_duration_seconds_count{plan_type="single_source",status="ok",tenant="acme-corp"} 3.0
+usql_query_duration_seconds_sum{plan_type="single_source",status="ok",tenant="acme-corp"} 0.29566605299987714
+usql_query_duration_seconds_count{plan_type="federated_join",status="ok",tenant="acme-corp"} 1.0
+usql_query_duration_seconds_sum{plan_type="federated_join",status="ok",tenant="acme-corp"} 0.16488516300159972
+usql_connector_api_latency_seconds_count{cache_hit="false",connector="jira"} 2.0
+usql_connector_api_latency_seconds_sum{cache_hit="false",connector="jira"} 0.32149126699732733
+usql_connector_api_latency_seconds_count{cache_hit="true",connector="jira"} 1.0
+usql_connector_api_latency_seconds_sum{cache_hit="true",connector="jira"} 2.0342002244433388e-05
+usql_connector_api_latency_seconds_count{cache_hit="false",connector="github"} 2.0
+usql_connector_api_latency_seconds_sum{cache_hit="false",connector="github"} 0.2421081399988907
+usql_query_errors_total{error_code="UNAUTHENTICATED"} 1.0
+usql_query_errors_total{error_code="ENTITLEMENT_DENIED"} 2.0

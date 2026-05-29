@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+
+# Local Claude Code permission grants (machine-specific).
+# Note: .claude/skills/ is intentionally tracked.
+.claude/settings.local.json
+
+# Live connector credentials — must never be committed.
+.env
+.env.*
+!.env.example

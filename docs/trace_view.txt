@@ -1,0 +1,24 @@
+==============================================================================
+Universal SQL Layer - observability snapshot
+==============================================================================
+
+TRACE  ad6993e2e0577ab8   root=query   total= 164.9 ms
+       span                            dur   0---------------------------------------164ms
+       query                       164.9ms  |##############################################|  plan=federated_join rows=7 role=admin
+       plan_and_entitle              1.9ms  |#                                             |
+       connector.execute:github    120.9ms  |##################################            |  github  rows=7 cache_hit=False
+       connector.execute:jira      160.7ms  |############################################# |  jira    rows=10 cache_hit=False
+
+       (github and jira spans start together and overlap -> parallel fan-out;
+        root total ~= the slower connector, not the sum)
+
+METRICS  (from /metrics)
+       queries total        : 4   single_source=3  federated_join=1
+       connector cache-hit  :  20.0%   (hit=1 live=4)
+       github  avg fetch    :  121.1 ms over 2 fetches
+       jira    avg fetch    :  107.2 ms over 3 fetches
+       query errors         : 0
+       rate-limit rejections: 0
+
+response: rows=7 freshness_ms=0 partial=False trace_id=dac22dae7fd34117
+==============================================================================

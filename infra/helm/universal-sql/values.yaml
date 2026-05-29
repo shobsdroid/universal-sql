@@ -1,0 +1,41 @@
+# Multi-tenant defaults (shared cluster, namespace-per-tenant isolation).
+deploymentMode: multi_tenant
+tenantId: ""              # set per-tenant namespace in multi-tenant mode
+
+image:
+  repository: ghcr.io/acme/universal-sql
+  tag: "0.1.0"
+
+# Endpoints come from the Terraform outputs (postgres/redis) + in-cluster Vault.
+config:
+  postgresEndpoint: ""
+  redisEndpoint: ""
+  otelEndpoint: "http://otel-collector:4318"
+  jwtSecretRef: usql-jwt          # k8s secret name (never inline)
+
+gateway:
+  replicas: 3
+  hpa:
+    minReplicas: 3
+    maxReplicas: 100
+    targetCPUUtilizationPercentage: 70
+  resources:
+    requests: { cpu: "1", memory: 512Mi }
+    limits: { cpu: "2", memory: 1Gi }
+
+executor:
+  replicas: 3
+  hpa:
+    minReplicas: 3
+    maxReplicas: 50
+    targetCPUUtilizationPercentage: 70
+  resources:
+    requests: { cpu: "1", memory: 1Gi }
+    limits: { cpu: "2", memory: 2Gi }   # join memory budget (design §10.2)
+
+# Argo Rollouts canary (design §12.3): 10% -> 50% -> 100%, auto-rollback on
+# SLO breach. Rendered into a Rollout when rollout.enabled = true.
+rollout:
+  enabled: true
+  steps: [10, 50, 100]
+  pauseSeconds: 600

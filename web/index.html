@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Universal SQL — Query Console</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header>
+  <h1>Universal SQL <span class="muted">— Query Console</span></h1>
+  <div class="status">
+    <span id="health-dot" class="dot"></span>
+    <span id="health-text">checking…</span>
+  </div>
+</header>
+
+<section class="auth">
+  <label for="token">JWT</label>
+  <input id="token" type="password" placeholder="paste a Bearer token, or mint one below" autocomplete="off" />
+  <div class="mint">
+    <select id="mint-role">
+      <option value="admin">admin</option>
+      <option value="eng" selected>eng</option>
+    </select>
+    <input id="mint-tenant" value="acme-corp" />
+    <button id="mint-btn" type="button">Mint dev token</button>
+    <span id="mint-hint" class="muted small"></span>
+  </div>
+</section>
+
+<section class="editor">
+  <div class="examples" id="examples">
+    <span class="muted small">Examples:</span>
+    <!-- chips injected by app.js based on /healthz connectors -->
+  </div>
+  <textarea id="sql" spellcheck="false" placeholder="SELECT ..."></textarea>
+  <div class="controls">
+    <label>max_staleness_ms
+      <input id="staleness" type="number" min="0" placeholder="(default)" />
+    </label>
+    <label class="checkbox">
+      <input id="async-ok" type="checkbox" />
+      async_ok
+    </label>
+    <button id="run-btn" type="button" class="primary">Run query</button>
+    <span id="run-status" class="muted small"></span>
+  </div>
+</section>
+
+<section class="results">
+  <aside id="meta" class="meta hidden"></aside>
+  <div id="results-wrap">
+    <div id="results-placeholder" class="muted">Results will appear here.</div>
+    <table id="results" class="hidden"><thead></thead><tbody></tbody></table>
+  </div>
+</section>
+
+<footer>
+  <span class="muted small">POST /v1/query · <a href="/docs" target="_blank" rel="noopener">Swagger</a> · <a href="https://github.com/anthropics/claude-code" target="_blank" rel="noopener" id="repo-link" hidden>repo</a></span>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>

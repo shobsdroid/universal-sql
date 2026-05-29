@@ -1,0 +1,16 @@
+# Single-tenant overrides: dedicated cluster in the tenant VPC, smaller ceilings,
+# tenant-scoped namespace. Same chart, no template changes.
+deploymentMode: single_tenant
+tenantId: acme-corp        # also pass --set tenantId=<tenant>
+
+gateway:
+  replicas: 2
+  hpa:
+    minReplicas: 2
+    maxReplicas: 20
+
+executor:
+  replicas: 2
+  hpa:
+    minReplicas: 2
+    maxReplicas: 12
