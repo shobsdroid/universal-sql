@@ -1,363 +1,523 @@
-# Plan of Action — Universal SQL Layer (6-month execution plan)
+# Plan of Action — Universal SQL Layer
 
-Operational roadmap from prototype → GA. Each milestone ends in a working
-deliverable; no big-bang integration.
+Six months from where we are to a product people use every day. The POC
+([`README.md`](./README.md)) proved the load-bearing pieces — connector
+contract, plan-time entitlements, parallel federated joins, freshness
+cache, audit. This plan turns that into a product.
 
-- Architecture, STRIDE threat model, cost levers, chaos plan:
-  [`design_doc.md`](./design_doc.md)
-- Running prototype + reproducible demos: [`README.md`](./README.md)
+---
 
-## What's proven vs what's deferred
+## The product we're building
 
-| Proven by working code | Deferred (in-process stand-in today) |
+> A universal data access layer that exposes every SaaS tool a company
+> uses as one queryable, permission-aware surface — answered in plain
+> English, kept live by webhooks, and watched by an agent while you sleep.
+
+Three shifts from POC to product:
+
+1. **Connectors for everything.** Two real today (GitHub, Jira). Ten by
+   month six (Salesforce, Slack, Notion, Linear, Stripe, ServiceNow,
+   Datadog, AWS, Zendesk, HubSpot). Same six-file recipe each time.
+2. **English instead of SQL.** An NL→SQL agent on top of the JSON
+   schema catalog. Anyone — sales, finance, on-call — asks a question,
+   gets a permission-checked answer.
+3. **Push instead of poll.** Webhook ingestion invalidates caches the
+   instant data changes. Subscriptions stream updates. Rule-watcher
+   agent pings you in Slack before you'd have noticed.
+
+That's the product. Everything below is how engineers ship it.
+
+---
+
+## Two loops, both agentic
+
+The product is two loops bolted to the same substrate. The substrate
+(catalog, planner, entitlements, executor, audit) is the POC. The loops
+are the work.
+
+### Pull loop — the user (or their agent) asks
+```
+   English question
+        ↓
+   [Planner agent · Sonnet]    reads /v1/connectors catalog, drafts SQL
+        ↓
+   [Critic agent · Opus]       checks columns exist, RLS won't strip the
+                                answer, pushdown is used; rewrites if not
+        ↓
+   plan-time entitlements  →  rate limit  →  parallel fan-out  →  rows
+        ↓
+   [Recommender · Sonnet]      "people who ran this also looked at X;
+                                want me to set up a watch for Y?"
+        ↓
+   answer + 1–3 suggested next queries + optional saved watch
+```
+
+Every LLM call is logged with a `trace_id`, the catalog it saw, and the
+plan it produced — same audit shape as a human-issued query. Reproducible,
+attributable, replayable.
+
+### Push loop — events arrive, the system reacts
+```
+   Webhook from GitHub / Jira / Stripe / ...
+        ↓
+   [Connector verify + normalize]    HMAC, dedupe by delivery_id
+        ↓
+   Event bus  →  invalidation index  →  refresh affected SSE subscribers
+        ↓
+   [Rule-watcher agent · Sonnet]     evaluates user-defined English rules
+                                      against the new state
+        ↓
+   if a rule fires:
+     [Summarizer · Opus]  drafts Slack/email: what changed, why it matters,
+                          1 suggested action + a deep link to the trace
+```
+
+A user never writes alert SQL. They write a sentence ("ping me when MRR
+drops > 3% in 24h") and the rule-watcher compiles it once to a
+plan-fragment + threshold; the push loop runs that fragment against
+every relevant event from then on. Cheap, deterministic, auditable.
+
+### What runs each agent
+
+| Step | Model | Latency budget | Why this model |
+|---|---|---|---|
+| NL→SQL planner | Sonnet (with cache) | 300–500ms | Cheap, good at structured generation against a JSON catalog |
+| SQL critic | Opus | 600–900ms | One careful pass beats five cheap ones; catches semantic errors |
+| Recommender | Sonnet | 200–400ms | Embedding-search + light reasoning on saved-query history |
+| Rule compiler | Opus (once per rule) | offline | Compiles English → plan fragment + threshold; cached |
+| Rule-watcher | deterministic eval | <10ms | No LLM on the hot path — the fragment is already compiled |
+| Alert summarizer | Opus | 1–2s (off-path) | Only on fire; quality matters more than latency |
+
+The hot push path **never calls an LLM** — that would make alerts both
+slow and non-deterministic. LLMs compile rules and write summaries;
+deterministic plan fragments do the watching.
+
+---
+
+## What's in the POC vs. what's left
+
+| Done | Left to build |
 |---|---|
-| Connector contract (5 sources, zero hot-path edits) | OAuth flow + token refresh per source |
-| Plan-time RLS/CLS injection, holds across JOIN | OPA / Rego policy DSL + source-permission ∩ tenant-policy |
-| Per-source rate limit, atomic across connectors, async overflow | Redis-backed buckets (today: in-process dict) |
-| Parallel fan-out + partial results on timeout | Circuit breaker + single-flight revalidation |
-| TTL cache + ETag (mock) + stale-if-error + per-query staleness | L2 Redis cache + per-tenant KMS-wrapped DEKs |
-| Cross-app SQL join across two real REST APIs | DuckDB+S3 materialization for joins above memory |
-| Tenant-scoped cache keys (no cross-tenant bleed, verified) | Postgres tenant registry + schema catalog + drift reconciler |
-| Audit trail of every access (including denials) | Audit log → S3 WORM, per-tenant export |
-| Connector versioning (semver in manifest, exposed in API + audit) | HS256 dev JWT → real OIDC/JWKS |
-| 27 tests, k6 load script (~586 req/s captured) | 1k QPS sustained on real infra; multi-region DR |
+| Connector contract (5 sources, 0 hot-path edits) | OAuth + token refresh per source |
+| Plan-time RLS/CLS, holds across JOIN | OPA/Rego, source-scope ∩ tenant-policy |
+| Per-connector rate limit + async overflow | Redis-backed buckets |
+| Parallel fan-out, partial-on-timeout | Circuit breaker, single-flight |
+| TTL cache + ETag + stale-if-error | L2 Redis cache, per-tenant KMS |
+| Cross-app join across two real APIs | DuckDB+S3 spill for large joins |
+| Tenant-scoped cache keys (no bleed) | Postgres tenant registry, schema drift |
+| Audit + trace for every access | Audit → S3 WORM, per-tenant export |
+| Connector versioning in API + audit | OIDC/JWKS (today: HS256 dev JWT) |
+| 27 tests, ~586 req/s on a laptop | 1k QPS sustained, multi-region DR |
 
-The right column is the load-bearing scope for M1–M6.
+The right column is the work.
 
-## Timeline
+---
+
+## Six milestones, four weeks each
 
 ```mermaid
 gantt
-    title 6-Month Execution Plan
+    title 6-Month Plan
     dateFormat YYYY-MM-DD
-    axisFormat W%V
-    section Milestones
-    M1 Core Foundation       :m1, 2025-01-06, 4w
-    M2 Planner+Freshness+Obs :m2, after m1, 4w
-    M3 Joins+Policy+Async    :m3, after m2, 4w
-    M4 Scale+IaC+DR          :m4, after m3, 4w
-    M5 Hardening+Cost+MT     :m5, after m4, 4w
-    M6 GA Readiness          :m6, after m5, 4w
-    section Continuous
-    Connector SDK             :sdk,  2025-01-06, 24w
-    Security & Compliance     :sec,  2025-01-06, 24w
-    Observability             :obs,  after m1, 20w
-    Developer Experience      :dx,   after m2, 16w
-    IaC + Platform            :iac,  after m2, 16w
+    section Build
+    M1 Foundation       :m1, 2025-01-06, 4w
+    M2 Cache + Obs      :m2, after m1, 4w
+    M3 Joins + Policy   :m3, after m2, 4w
+    M4 Scale + DR       :m4, after m3, 4w
+    M5 Multi-tenant + Push loop :m5, after m4, 4w
+    M6 GA + Pull agent          :m6, after m5, 4w
 ```
+
+Each milestone ends in a working deliverable. No big-bang integration.
+
+---
+
+### M1 — Foundation (weeks 1–4)
+**Product:** real GitHub + Jira against a real tenant, with real auth.
+
+- OIDC/JWKS replaces the dev JWT.
+- OPA sidecar wired up with a default allow/deny policy.
+- Redis Lua-CAS rate limiter; the in-process backend stays for unit tests.
+- Postgres tenant registry + schema catalog.
+- Connector SDK v0: pagination, OAuth refresh hook, error taxonomy.
+- Migrate the 5 POC connectors to the SDK.
+
+**Exit:** real-GitHub query works for a staging tenant with a rotated
+OIDC token. Two gateway replicas share the same rate-limit bucket
+(proves state is out of process).
+
+---
+
+### M2 — Cache + Observability (weeks 5–8)
+**Product:** dashboards that don't lie. P95 < 1.8s on single-source.
+
+- Pushdown matrix per connector; planner consults it.
+- Redis L2 cache, KMS-wrapped DEKs per tenant.
+- Single-flight revalidation under concurrent miss.
+- ETag/304 in the SDK, live against GitHub.
+- Schema-drift reconciler with `SCHEMA_DRIFT` error + alert.
+- Circuit breakers, 3-state.
+- Grafana dashboards-as-code, SLO doc, error-budget policy.
+- k6 in CI on mocks, weekly synthetic against staging real APIs.
+
+**Exit:** P95 < 1.8s on real GitHub at 200 QPS for 10 min. Cache hit
+ratio > 50% on a replayed workload. Kill one source mid-query →
+`partial:true`, the other still returns.
+
+---
+
+### M3 — Joins + Policy + Async (weeks 9–12)
+**Product:** the cross-app federated join, in production. Async path
+ready for long-running and scheduled work.
+
+- Cardinality estimator picks the build side and the spill threshold.
+- DuckDB + S3 short-lived materialization (≤10 min TTL).
+- Join-key type coercion (int ↔ string is the common case).
+- RLS/CLS in Rego, **pre-compiled to plan fragments** at load time —
+  same compile output the rule-watcher will reuse in M5.
+- Entitlement service = source-scope ∩ tenant-policy.
+- **Async path, properly built:** Postgres `jobs` table + worker pool
+  + `/v1/jobs/{id}`. Three job kinds from day one — *overflow* (rate-limit
+  reroute), *scheduled* (saved query on a cron), *long-running* (joins
+  that spill). One workers process, three reasons to enqueue.
+- **Event bus skeleton:** NATS JetStream (or Redis Streams; revisit M4)
+  for connector-emitted events. Workers and the future webhook ingestor
+  publish here; subscribers consume by tenant + connector.
+- Full error vocabulary shipped.
+
+**Exit:** `eng`-role join across GitHub↔Jira returns zero OPS rows
+even when keys would match. Async reroute completes in 60s under
+200 QPS. 50k-row join spills to DuckDB and matches the in-memory
+result on a sample. A scheduled query (cron) lands rows in the audit
+log under the job's owner.
+
+---
+
+### M4 — Scale + DR (weeks 13–16)
+**Product:** 1k QPS, automated infra, basic disaster recovery.
+
+- HPA on CPU + queue depth; pre-warmed pool for spikes.
+- Terraform end-to-end: clean account → working env in ≤20 min.
+- Argo Rollouts canary, auto-rollback on SLO breach.
+- Multi-AZ Postgres, Redis cluster mode, AZ-spread gateways.
+- DR: Postgres PITR, Redis snapshot to S3 every 15 min, restore drill
+  in a separate account.
+- 1k QPS k6 scenario: ramp, soak, spike.
+- Profile and optimize whatever the load test exposes.
+
+**Exit:** 1k QPS for 60 min, P95 < 1.5s, error rate < 0.1%, no manual
+touches. Canary auto-rolls back on injected 5xx > 1%. DR restore in 4h.
+
+---
+
+### M5 — Multi-tenant + Cost + Push loop (weeks 17–20)
+**Product:** safe for paying customers. **Push loop lights up.**
+
+Multi-tenant hardening:
+- NetworkPolicy audit + drift detection in CI.
+- Cross-tenant red-team test in CI (Tenant A can't read Tenant B's anything).
+- Audit log → S3 WORM with per-tenant export endpoint.
+- Per-tenant cost attribution + soft alerts at 80%, hard throttle at 100%.
+- Data-residency tags enforced at pod selection.
+- Off-board workflow: revoke OAuth, TTL→0, KMS scheduled-delete, audit archival.
+- Targeted perf pass (cache-key compute, OPA eval, predicate ser/de).
+
+Push loop (built on the M3 event bus):
+- **Webhook ingestion** for GitHub + Jira + Stripe — HMAC verify per
+  connector, idempotent by `delivery_id`, dead-letter for malformed.
+- **Row-level invalidation index** — reverse map from `{connector, table,
+  row_pk}` → cache keys. Cache writes update the index; events tear down
+  the right keys with no blast radius.
+- **SSE subscriptions** — `POST /v1/subscribe` returns a stream id;
+  clients receive diffs when relevant data changes. Re-checks RLS/CLS
+  on every push (entitlements at push time, not just plan time).
+- **Single-flight on refresh** — N subscribers to the same query → one
+  upstream fetch, fan-out to all.
+
+**Exit:** red-team CI test passes. Cost attribution within 10% of
+measured spend. P95 improves ≥15% vs. M4. End-to-end push: a GitHub PR
+opened in staging triggers a subscriber's SSE event in < 1 s, with
+RLS-correct payload.
+
+---
+
+### M6 — GA + Pull agent + Cockpit alpha (weeks 21–24)
+**Product:** GA-ready, with English-in / answer-out, and a rule-watcher
+running for an alpha cohort.
+
+GA gates:
+- Run all 8 chaos drills from [`design_doc.md §17`](./design_doc.md#17-chaos-engineering-plan).
+  AI drafts runbooks from findings; SRE edits and merges.
+- External STRIDE review + third-party pen test.
+- Onboarding playbook: a DX engineer adds Salesforce in <2h (acceptance test).
+- SLO + burn-rate alerts that block deploys on budget exhaustion.
+
+Pull loop (agentic), wired against the M5 push loop:
+- **MCP server** — `/v1/connectors` + `/v1/query` exposed as MCP tools so
+  Claude / Cursor / any MCP client can use the product directly.
+  Entitlements still apply.
+- **NL→SQL planner agent** (Sonnet) — reads the catalog, drafts SQL,
+  emits the `plan` JSON the executor already accepts.
+- **SQL critic agent** (Opus) — second pass: nonexistent columns,
+  un-pushable predicates, "this query will be 95% RLS-stripped — ask for
+  what you actually want." Rejects or rewrites.
+- **Recommender** (Sonnet) — every answer returns 1–3 *related* queries
+  drawn from the tenant's saved-query history + embedding similarity.
+  "Want me to save this as a watch?" → one click registers a rule.
+- **Rule-watcher in production** — English rules compiled by Opus to
+  plan fragments, evaluated by the push loop. Slack/email alerts with
+  Opus-drafted summaries on fire.
+
+**Exit:** 8 chaos drills pass. No critical security findings. Salesforce
+onboarded in <2h by someone new. 1k QPS green 7 days running. NL→SQL
+accuracy on a 50-question benchmark: ≥85% executable, ≥95% no
+entitlement bypasses (the critic must catch the rest). 3 alpha
+customers using the cockpit daily.
+
+---
 
 ## Team
 
-| Role | Count | Lead focus |
+Eight people. Lean on purpose.
+
+| Role | # | Owns |
 |---|---|---|
 | EM | 1 | Tech lead M1–M2; people lead M3+ |
-| Backend Engineers | 3 | Gateway/planner · Connectors · Infra-adjacent ops |
-| Infrastructure Engineer | 1 | IaC, Helm, CD, observability stack |
-| Security Engineer | 1 | Threat model, Vault/KMS, pen-test prep |
-| QA Engineer | 1 | Test harness, load, chaos |
-| PM | 0.5 | Shared |
-| DX | 0.5 | SDK docs, connector onboarding playbook |
+| Backend | 3 | Gateway/planner · Connectors · Async + ops |
+| Infra | 1 | IaC, Helm, CD, observability stack |
+| Security | 1 | Threat model, Vault/KMS, pen-test prep |
+| QA | 1 | Test harness, load, chaos |
+| PM / DX | 0.5 + 0.5 | Roadmap · SDK docs, connector playbook |
 
-**~8 FTE total.** AI-assisted execution (next section) lets this team carry the
-scope of an unassisted ~10–11 FTE team.
+AI-assisted work across the team (~30% throughput uplift) is how 8 FTE
+carry a ~10–11 FTE scope. We spend the surplus on scope, not headcount,
+because M3–M6 is gated by security and chaos review (humans must
+approve) not by raw code.
 
-## How AI / Claude assistance shapes the plan
+---
 
-The plan assumes ~30% of engineering throughput comes from AI-assisted work
-across the team's IDE, CI, and on-call workflows. This is *specific* — each
-use below has a measurable expected effect on milestones.
+## How AI shows up in the dev loop
 
-### Concrete uses in the dev loop (M1–M6)
+Specific, measurable, no magic.
 
-| Use | Where in the plan | Expected impact |
+- **`add-connector` skill** — mock connector in <2h, real REST connector
+  in ~1 day (vs. ~3).
+- **Test generation from `ConnectorManifest`** — contract tests
+  synthesized from tables × pushable filters × error modes.
+- **Schema-drift triage** — on drift, AI summarises the diff, lists
+  impacted saved queries from the audit log, proposes a migration.
+- **PR security gate** — every PR gets a checklist comment before human
+  review: does it touch the hot path? does it move RLS injection? does
+  it pull in a CVE'd dep?
+- **Runbook drafts** — after each chaos drill, AI drafts from incident
+  notes + telemetry; SRE edits and merges.
+- **Cost critique on plans** — `/v1/explain` output → LLM critique:
+  *"this query will hit GitHub search rate limit at 12 req/s — push
+  the `repo:` filter."*
+- **Rego authoring** — human writes the intent, AI compiles to Rego,
+  reviewer checks the resulting plan fragment.
+
+**What AI does not do:** production deploys, security sign-off, incident
+command, PII review, autonomous policy changes. All human-gated.
+
+---
+
+## Applied AI in the product
+
+The dev-loop section above is how engineers ship. This section is what
+the user actually feels.
+
+### Pull side — agents that turn intent into answers
+
+- **NL→SQL planner (Sonnet).** Reads the catalog over MCP, drafts the
+  `plan` JSON. Cached prompts: the catalog and the user's saved-query
+  history are stable, so we hit Anthropic prompt-cache on most calls.
+  Median cost per query: a fraction of a cent.
+- **SQL critic (Opus).** One careful pass. Rejects nonexistent columns,
+  catches predicates that won't push down, flags "this will be entirely
+  RLS-stripped for this user." If it can fix, it rewrites; if not, it
+  returns a structured error the planner can retry against.
+- **Schema discovery hint.** When the catalog grows past ~50 tables,
+  the planner asks an embedding index *"which 5 tables are relevant to
+  this question?"* before reading the full schemas. Keeps context small,
+  keeps planning fast.
+- **Recommender.** After every answer, returns 1–3 next-best queries.
+  Sources: (a) what *this user* has run before, (b) what others in this
+  tenant ran after similar queries, (c) embedding similarity over saved
+  queries. Surfaces as chips: *"Want PRs idle > 24h with open Jira
+  blockers? • Want this grouped by team?"*
+- **Save-as-watch.** Any query becomes a rule with one click — "alert
+  me when this returns rows / when the count changes by N%."
+
+### Push side — agents that watch and explain
+
+- **Rule compiler (Opus, one-shot).** English rule → plan fragment +
+  threshold + cadence. Compiled once at save time, then deterministic.
+  No LLM on the hot push path.
+- **Anomaly explainer (Opus, on fire).** When a rule fires, Opus takes
+  the rows, the rule, the recent history from audit, and drafts a
+  Slack message: *what changed, why it likely matters, one suggested
+  action, deep link to the trace.* The user sees the explanation, not
+  the SQL.
+- **Cross-source correlation.** "MRR dropped 4%" + "Zendesk P1 volume
+  doubled 24h ago" → recommender suggests the rule that joins them.
+  The system learns the patterns that matter for *this* tenant by
+  watching which suggested rules get saved.
+
+### Recommendation engine, in one paragraph
+
+Everything the user does (query, save, ack alert, dismiss suggestion)
+is an event in the audit log already. A nightly batch job builds two
+indexes: an embedding index over query text + result schema, and a
+co-occurrence index ("after running X, users in this tenant often run
+Y"). At query time, the recommender consults both, ranks, and returns
+the top 3. No model training, no MLOps — it's classic retrieval + a
+small LLM rerank. Tractable in M6.
+
+### Guardrails — LLMs respect the same boundaries as humans
+
+- **The critic cannot bypass entitlements.** The plan it emits still
+  goes through plan-time RLS/CLS. An LLM cannot grant itself access it
+  didn't have via clever rewriting.
+- **Every LLM call is audited** with model id, prompt hash, output, and
+  the trace_id of the resulting query. Reproducible after the fact.
+- **No PII in prompts.** The planner sees schema, not rows. The
+  summarizer sees rows the user is already entitled to see, and only
+  for the rule that fired.
+- **Customer opt-out** at the tenant level: NL→SQL and summaries can
+  be disabled per-tenant; everything else (deterministic planner +
+  push loop) works without LLMs at all. The product degrades to "very
+  fast English-free Looker" — still useful.
+
+---
+
+## Continuous workstreams
+
+Run alongside the milestones, owned by their leads.
+
+- **Connector pipeline** (DX) — Q1: GitHub + Jira live (done). Q2:
+  Salesforce, Notion, Slack. Q3+: ServiceNow, Datadog, AWS, Stripe,
+  Zendesk, HubSpot.
+- **Security & compliance** (Security) — STRIDE every milestone; SOC2
+  inventory in M5, evidence in M6; GDPR DSR tooling M5–M6.
+- **Observability** (Infra + Backend) — per-tenant dashboards in-app,
+  metric→trace exemplars, cardinality budget, cost-attribution view.
+- **Developer experience** (DX) — JDBC/ODBC shim, dbt adapter, Python
+  client, VS Code extension with catalog autocomplete, `/v1/explain`.
+- **Cost / FinOps** (joins M3) — hit-ratio tuning, pushdown coverage,
+  budget caps in M5, spot async workers, source tiering.
+- **IaC platform** (Infra) — M2 dashboards-as-code → M3 secrets/policy
+  bundles → M4 full Terraform → M5 SOC2-aligned change management →
+  M6 blue/green DR drill.
+- **Applied AI** (Backend + DX, joins M4) — M4: embedding index over
+  catalog + saved queries. M5: rule compiler (English → plan fragment),
+  Slack summarizer prototype on staging. M6: NL→SQL planner + critic
+  + recommender behind a per-tenant feature flag. Eval harness
+  (50-question accuracy benchmark, entitlement-bypass red team) is in
+  CI from M4 onward.
+
+---
+
+## Decisions we'll revisit
+
+Bet now, switch if the data says so.
+
+| Decide at | What | Switch when |
 |---|---|---|
-| **Connector onboarding via the bundled `add-connector` skill** | Continuous (Connector SDK workstream) | Time-to-PR for a new mock connector: <2h. For a real REST connector with OAuth + pagination + smoke test: ~1 day instead of ~3 |
-| **Test generation from manifests** | M1.10, M2.8, M3.9 | Contract tests synthesized from `ConnectorManifest` (tables × pushable_filters × error modes); k6 scenarios from SLO doc |
-| **Schema-drift triage** | M2.5 reconciler | On detected drift, AI summarises the diff, lists impacted saved queries (from audit), and proposes a migration; SRE/Backend approves |
-| **PR security gate** | Continuous Security workstream | Each PR: AI runs a checklist — does it touch a hot-path file? does it move RLS injection earlier or later? does it add a dependency with known CVEs? — and posts a structured comment before human review |
-| **Runbook generation** | M6.5 | After each chaos drill (M6.1), AI drafts the runbook from incident notes + telemetry; SRE edits and merges |
-| **Design doc + plan-of-action sync** | Continuous | When a PR changes an architectural decision, AI proposes the design doc / PLAN_OF_ACTION diff so they don't drift from code |
-| **Cost critique on query plans** | M5.4 cost model | The `/v1/explain` plan output is passed to an LLM for cost critique: "this query will hit GitHub search rate limit at 12 req/s — consider pushing `repo:` filter" |
-| **OPA Rego policy authoring** | M3.4 | Human writes the intent; AI translates to Rego; reviewer checks the compiled plan fragment shape |
-
-### Concrete uses in the product (post-GA — but the substrate lands earlier)
-
-Universal SQL is a natural AI backplane: the catalog is JSON-discoverable, the
-entitlement model enforces least-privilege at plan time, and the response
-shape includes structured errors. The post-GA AI features in Q5 are quick to
-ship because the substrate already exists.
-
-- **MCP server** — `/v1/connectors` and `/v1/query` exposed as MCP tools.
-  Agents discover tables and query them safely (entitlements still apply).
-  ~1 week because schema catalog is already JSON.
-- **NL → SQL with two-pass critique** — Claude Sonnet translates intent to
-  SQL; Claude Opus critiques the SQL against the catalog before submission
-  (rejects nonexistent columns, suggests valid alternatives). Saves customers
-  ~half their schema-discovery time.
-- **Agent-friendly error envelope** — every error already carries a structured
-  `message`. We extend it with `suggested_action`. E.g. `INVALID_SQL` on
-  `github.commits` returns `"table not found — did you mean github.pull_requests?"`.
-- **Embedding search** over PR titles + issue descriptions, joinable with
-  structured fields. Backed by a separate vector index.
-
-### Velocity & scope reallocation
-
-With AI in the loop, the 8-FTE team's throughput is closer to 10–11 FTE
-unassisted. We **spend that surplus on scope, not headcount** — because the
-gating constraints in M3–M6 are security review, multi-tenant hardening, and
-chaos validation (where AI assists but humans must approve), not raw code.
-
-Concretely:
-- **Promote multi-JOIN** (originally Q3 post-GA) into **M5** if customer
-  signal in M3–M4 confirms.
-- **Promote the MCP server prototype** into **M6 stretch**, ready for an
-  alpha cohort the day after GA.
-- **Backstop M2.5 schema-drift reconciler** with AI-suggested migrations so
-  the M2 exit gate isn't blocked on Backend bandwidth.
-
-### What AI does NOT do
-
-To keep the threat model honest:
-
-- **No production deploys without human approval.** AI can draft Helm/Terraform
-  diffs; humans approve every prod change.
-- **No security sign-off.** M6's STRIDE update and external pen test are human-led.
-- **No incident command.** AI assists with `grep`, log correlation, and runbook
-  retrieval during outages; humans run the incident and own the comms.
-- **No PII/customer-data review.** Audit-log exports go through an SRE+Legal
-  human review; AI never sees raw customer rows.
-- **No autonomous policy changes.** Rego policy proposals go through the same
-  Git-bundle review path; AI just drafts.
-
-## Pre-M1 — Week 0
-
-Four days; skipping it makes M1 slip.
-
-- Hire confirms, NDAs, repo access (EM).
-- Cloud account + IAM baseline + SCP region restriction (Infra).
-- Postgres (single-AZ dev tier) for tenant registry + schema catalog (Infra).
-- Vault dev mode + AppRole template (Security).
-- OPA sidecar vs library — RFC merged (Backend).
-- OIDC IdP picked + wired to stub app (Security).
-- OTel collector → staging Tempo (Infra).
-- Connector contract-test harness scaffold (QA).
-
-Decisions made now, revisited later: **OPA sidecar** (default; revisit M4 if
-p95 OPA-bound), **Postgres jobs table for async** (default M3; revisit M5 for
-SQS), **LRU cache eviction** (default M2; revisit M3 if hit-rate <50%).
+| End of M2 | L2 cache: LRU vs W-TinyLFU | Hit ratio < 50% |
+| End of M3 | Event bus: NATS vs Redis Streams | Throughput > 50k events/s or ordering bugs |
+| End of M3 | Async store: Postgres vs SQS | Postgres write QPS > 500 |
+| End of M4 | OPA: sidecar vs embedded | OPA eval p95 > 50ms |
+| End of M5 | NL→SQL: single-pass vs planner+critic | Single-pass accuracy ≥ 90% on benchmark |
+| Start of M5 | SDK: Python vs polyglot | Customer asks for Go/Java |
+| Start of M6 | JDBC driver: build vs partner | BI tools > 30% of customers |
+| Post-GA | Federation engine: home-grown vs Trino | Multi-JOIN is the bottleneck |
 
 ---
 
-## M1 — Core Foundation (Weeks 1–4)
+## Risks we're tracking
 
-**Goal:** Single-tenant end-to-end against real GitHub + Jira with OIDC,
-basic AuthZ, Redis rate limit.
-
-**Key deliverables**
-- OIDC/JWKS verify (cached, rotation-tolerant) replaces HS256.
-- OPA sidecar contract + Rego bundle CI; default policy = table allow/deny.
-- Redis Lua-CAS rate limiter; in-process backend stays behind an interface for unit tests.
-- Postgres-backed tenant registry + connector bindings + schema catalog.
-- Connector SDK v0 typing: pagination cursor, OAuth refresh hook, error categories. Migrate the prototype's 5 connectors.
-- Source-permission scope model (`ConnectorContext.scopes`).
-- Idempotency keys for POST `/v1/query` (Redis SETNX, 24h).
-
-**Exit criteria**
-- Real-GitHub query succeeds for one staging tenant with a rotated OIDC JWT.
-- 401 / 403 / 429 negative tests all pass.
-- A second gateway replica behind a load balancer enforces identical buckets (proves state moved out of process).
-
-**Deferred to later**: RLS row filters (M3), L2 cache (M2), async overflow (M3), joins (M3).
-
----
-
-## M2 — Planner + Freshness + Observability (Weeks 5–8)
-
-**Goal:** Production-grade single-source queries with caching and the
-observability story reviewers see.
-
-**Key deliverables**
-- Pushdown capability matrix per connector; planner consults it.
-- Redis cluster L2 cache with per-tenant KMS-wrapped DEKs.
-- Single-flight revalidation under concurrent miss.
-- ETag/304 protocol in SDK; live GitHub implementation.
-- Schema-drift reconciler + alerting (AI assists migration drafts).
-- Circuit breaker per source (3-state, half-open probe).
-- Grafana dashboards-as-code + alert rules + SLO doc + error-budget policy.
-- k6 in CI (mocks) + weekly synthetic against staging real APIs.
-
-**Exit criteria**
-- P95 < 1.8s on simple single-source queries (real GitHub, staging, k6 200 QPS for 10 min).
-- Cache hit ratio > 50% on a replayed dashboard workload.
-- Schema drift on a fixture column triggers `SCHEMA_DRIFT` within 60s.
-- Killing one source mid-query yields `partial:true`; the other still returns rows.
-
----
-
-## M3 — Joins + Policy DSL + Async Path (Weeks 9–12)
-
-**Goal:** Cross-app federated queries with full RLS/CLS, async overflow, and
-the materialization escape hatch.
-
-**Key deliverables**
-- Cardinality estimator drives build-side choice + spill threshold.
-- DuckDB + S3 short-lived materialization (≤10 min TTL).
-- Join-key type coercion (int ↔ string keys are common in real federated joins).
-- RLS/CLS moved from `policy.yaml` to Rego; **pre-compiled to plan fragments at policy-load time** (the latency win).
-- Entitlement service intersects source-scope and tenant policy.
-- Async overflow: Postgres `jobs` table + worker pool + `/v1/jobs/{id}`.
-- Full error vocabulary implemented and tested.
-
-**Exit criteria**
-- Cross-app join correctness: `eng`-role query joining github↔jira returns 0 OPS rows even when keys would match.
-- Async reroute: `202 + job_id` → poll returns full result within 60s under 200 QPS load.
-- Materialization spill: 50k-row join lands in DuckDB; result matches in-memory path on a sample.
-- Policy reload latency < 30s across all gateway pods.
-
----
-
-## M4 — Scale + IaC + DR (Weeks 13–16)
-
-**Goal:** 1k QPS sustained; fully automated infra; basic DR.
-
-**Key deliverables**
-- HPA on CPU **and** request-queue depth; pre-warmed node pool for spikes.
-- Terraform modules end-to-end (`apply` to clean state → working env in ≤20 min).
-- Helm + Argo Rollouts canary with auto-rollback on SLO breach.
-- Multi-AZ Postgres (read replica), Redis cluster mode (3×2), gateway/executor topology spread across 3 AZ.
-- DR: Postgres PITR, Redis snapshot to S3 every 15 min, restore runbook tested in a separate account.
-- k6 1k QPS scenario + ramp/soak/spike profiles.
-- Performance debug pass: profile + optimise hot paths revealed under load.
-
-**Exit criteria**
-- 1k QPS for 60 min: P95 < 1.5s, error rate < 0.1%, zero manual intervention during scale events.
-- Canary auto-rolls back on simulated 5xx > 1%.
-- DR restore: serving queries within 4h from snapshot, no data loss inside RPO.
-
----
-
-## M5 — Hardening + Cost + Multi-tenant (Weeks 17–20)
-
-**Goal:** True multi-tenant isolation with cost guardrails.
-
-**Key deliverables**
-- NetworkPolicy audit + drift detection in CI.
-- Cross-tenant red-team test in CI (tenant A token can't read tenant B's cached anything).
-- Audit log → S3 WORM + per-tenant export endpoint.
-- Per-tenant cost attribution model + budget caps (soft alert 80%, hard throttle 100%).
-- Data-residency tag enforcement at executor pod selection.
-- Off-board workflow: revoke OAuth, schedule TTL→0, KMS scheduled-delete, audit archival.
-- Profiling pass + targeted optimisations (cache-key compute, OPA eval, predicate ser/de likely candidates).
-
-**Exit criteria**
-- Cross-tenant isolation: red-team test in CI passes.
-- Cost attribution within 10% of measured spend.
-- Audit completeness: integration test asserts 100% of access events land in WORM.
-- P95 improves ≥15% vs M4 baseline on the same workload.
-
----
-
-## M6 — GA Readiness (Weeks 21–24)
-
-**Goal:** Sign off for production launch.
-
-**Key deliverables**
-- Run all 8 chaos drills from [design_doc §17](./design_doc.md#17-chaos-engineering-plan); AI drafts runbooks from findings.
-- External STRIDE review + third-party pen test; remediation tracked.
-- Onboarding playbook validated: a DX engineer onboards Salesforce in <2h (acceptance test of the playbook + add-connector skill).
-- SLO + burn-rate alerts + error-budget policy that blocks deploys on exhaustion.
-- Runbooks for 6 incident classes (rate-limit flood, connector auth, cache stampede, OPA misfire, Redis split-brain, KMS region outage).
-- Performance regression suite green in CI.
-
-**Exit criteria**
-- All 8 chaos drills pass (graceful degradation, no data corruption, no cross-tenant leakage).
-- External security: no critical findings open.
-- Salesforce connector onboarded in <2h by an engineer new to the codebase.
-- 1k QPS regression suite green 7 consecutive days.
-
----
-
-## Cross-cutting workstreams
-
-| Workstream | Lead | Notes |
-|---|---|---|
-| Connector pipeline | DX | Q1: GH+Jira live (done in prototype) · Q2: Salesforce, Notion, Slack · Q3+: ServiceNow, Datadog, AWS, Stripe |
-| Security & compliance | Security | STRIDE every milestone; SOC2 controls inventory M5, evidence M6; GDPR data subject rights tooling M5–M6 |
-| Observability | Infra+Backend | Per-tenant dashboards exposed in-app; exemplars (metric→trace); cardinality budget; cost-attribution view (driven by M5) |
-| Developer experience | DX | JDBC/ODBC shim, dbt adapter, Python client SDK, VS Code extension w/ catalog autocomplete, `/v1/explain` endpoint |
-| Cost & FinOps | Cost (joining M3) | Cache hit ratio tuning; pushdown coverage %; budget caps M5; spot-instance async workers; tiering cheap-vs-expensive sources |
-| Platform / IaC | Infra | M2 dashboards as code → M3 secrets+policy bundles → M4 full Terraform → M5 SOC2-aligned change management (CI gates: `tfsec`, `kube-linter`) → M6 blue/green DR drill |
-
-## Strategic decisions to revisit in flight
-
-| Checkpoint | Decision | Switch trigger |
-|---|---|---|
-| End of M2 | L2 cache: LRU vs W-TinyLFU | Hit ratio < 50% on realistic workload |
-| End of M3 | Async job store: Postgres vs SQS | Postgres write QPS > 500 |
-| End of M4 | OPA: sidecar vs embedded | OPA eval > 50ms p95 |
-| Start of M5 | Connector SDK: Python only vs polyglot | Customer requests Go/Java connector |
-| Start of M6 | JDBC driver: build vs partner | BI tool penetration > 30% of customers |
-| Post-GA | Federation engine: home-grown vs Trino/DataFusion | Multi-JOIN cost-based optimization is the bottleneck |
-
-## Risk register
-
-| Risk | Likelihood | Impact | Mitigation |
+| Risk | L | I | Mitigation |
 |---|---|---|---|
-| Connector API variability | High | Medium | SDK standardises errors; schema-drift alerts; AI-assisted migration drafts |
-| GitHub rate quota at scale | High | High | Per-tenant token pooling; async overflow; mocks in load CI |
-| Schema drift breaking queries | Medium | High | Reconciler + `SCHEMA_DRIFT` graceful error + AI-suggested fix |
-| OPA evaluation latency | Medium | Medium | Pre-compile policies to plan fragments; CI bench |
-| DuckDB S3 latency under spill | Medium | Medium | Week-9 benchmark; in-memory fallback if S3 > 2s/MB |
-| Single-tenant cluster cost overrun | Low | Medium | TF cost estimation in PR; monthly budget alerts |
-| OAuth token rotation downtime | Low | High | Vault dynamic secrets; zero-downtime rotation |
+| Connector API drift | H | M | SDK error taxonomy, drift alerts, AI migration drafts |
+| GitHub quota at scale | H | H | Per-tenant token pooling, async overflow, mocks in CI |
+| Schema drift breaks queries | M | H | Reconciler, `SCHEMA_DRIFT` graceful error, AI fix-up |
+| OPA eval latency | M | M | Pre-compile policies, CI bench |
+| DuckDB S3 spill latency | M | M | Week-9 benchmark; in-memory fallback if S3 > 2s/MB |
+| Cluster cost overrun | L | M | TF cost estimation in PRs, monthly alerts |
+| OAuth rotation downtime | L | H | Vault dynamic secrets, zero-downtime rotation |
+| NL→SQL hallucination / entitlement bypass | M | H | Critic pass + plan-time RLS catches; 50Q eval + red team in CI; per-tenant opt-out |
+| Webhook storm or replay attack | M | M | Idempotent by `delivery_id`, HMAC verify, per-connector rate limit on ingest, DLQ |
+| Push loop fan-out cost | M | M | Single-flight refresh, subscription cap per tenant, sample-then-fan-out on heavy events |
+| LLM provider outage | L | M | Degrade to template-based suggestions; planner falls back to "give me SQL" mode; nothing on the hot push path |
 
-## Post-GA roadmap (Months 7–18)
+---
 
-What the 6-month plan deliberately defers because it would compromise GA
-quality. All directly motivated by customer interviews or prototype-revealed
-limits, none speculative.
+## After GA (months 7–18)
 
-**Q3 — Query language expansion**: multi-JOIN with cost-based ordering (4w),
-OR predicates (1w), `NOW()-7d` date arithmetic (1w), aggregates + GROUP BY
-(6w), CTEs (2w), `EXPLAIN` GA (1w).
+What we deliberately defer because it would compromise GA quality —
+all motivated by customer signal or POC-revealed limits, none speculative.
 
-**Q3–4 — Multi-region active-active**: cell-based architecture, catalog
-replicated globally, data plane regional, customer-chosen primary region.
-12w. Non-blocking pieces can start in M4.
+- **Q3 — SQL expansion.** Multi-JOIN with cost-based ordering, OR
+  predicates, date arithmetic, aggregates + GROUP BY, CTEs, `EXPLAIN` GA.
+- **Q3–4 — Multi-region active-active.** Cell-based, catalog replicated
+  globally, data plane regional. Non-blocking pieces can start in M4.
+- **Q3–4 — Cockpit β — widen the push loop.** Webhooks for every
+  connector that has them (Slack, Linear, Salesforce, Stripe, Zendesk).
+  CDC for sources without webhooks. Polling fallback for the rest. Goal:
+  median freshness < 2 s across the catalog.
+- **Q4 — Cockpit GA — proactive recommendations.** Move the recommender
+  from "after a query" to "all the time" — a tenant-scoped agent watches
+  the firehose and proposes rules ("you've manually checked open KAFKA
+  blockers 14 times this week; want a daily digest?"). Embedding search
+  over text fields (PR titles, ticket descriptions) joinable with
+  structured columns.
+- **Q5 — Write path.** `UPDATE jira.issues SET status=…` translates to
+  API calls. Separate write OPA policy, idempotency on every mutation,
+  saga for cross-source. A quarter of work + a new threat model. Unlocks
+  *acting* on recommendations, not just reading them.
+- **Q5–6 — Agent-to-agent.** Outside agents (Cursor, Claude Desktop,
+  internal workflow bots) call us via MCP; we call back via webhooks.
+  The product becomes the data spine of a customer's agent stack.
+- **Q6+ — Performance R&D.** Vectorized executor (Arrow + Polars),
+  optional Rust sidecar for highest-QPS connectors, bloom-filter
+  pushdown, adaptive execution.
 
-**Q4 — Event-driven freshness**: GitHub + Jira webhook subscriptions for
-sub-second invalidation; polling fallback for sources without webhooks; CDC
-for select hot tables. Biggest cache-hit-ratio improvement available.
+---
 
-**Q5 — AI / agentic backplane**: MCP server, NL→SQL with critique pass,
-agent-friendly error envelope, embedding search over text fields. The
-substrate (catalog, entitlements, structured errors) already exists, so
-this is mostly UX + driver work. Highest-leverage post-GA bet.
+## Lessons from the POC — treat as plan invariants
 
-**Q5–6 — Write path / mutations**: `UPDATE jira.issues SET status=... WHERE
-id=...` translates to API calls. Separate write OPA policy; idempotency keys
-on every mutation; saga pattern for cross-source. A quarter of work + a new
-threat model.
+1. **The connector contract is the load-bearing abstraction.** Five
+   sources added with zero hot-path edits. Every milestone's exit
+   criteria includes "no hot-path changes to add a new connector."
+2. **Entitlements at plan time, never after fetch.** RLS predicates
+   appear in the logged plan *before* any connector call. M3's Rego
+   compile-to-plan is the same principle, scaled.
+3. **`partial:true` is a feature, not an error.** Every chaos drill
+   includes "kill one source, assert partial + other source's rows."
+4. **Mocks and live connectors coexist forever.** Mocks are the only
+   way to load-test without quota, the only way unit tests stay fast,
+   the only way demos are deterministic.
+5. **Cross-cutting IDs match their tools' formats.** The POC's 16-char
+   `trace_id` vs. Jaeger's 32-char cost 30 minutes of debugging. Every
+   trace / job / audit ID uses the format of the tool that indexes it.
 
-**Q6+ — Performance R&D**: vectorized in-process executor (Arrow + Polars),
-optional Rust executor sidecar for highest-QPS connectors, bloom-filter
-pushdown for joins, adaptive query execution.
+---
 
-## Lessons from the prototype (treat as plan invariants)
+## Done means
 
-1. **Connector contract is the load-bearing abstraction.** 5 sources added without touching hot-path files. Every milestone's exit criteria must include "no hot-path edits needed to add a new connector."
-2. **Plan-time entitlement injection is non-negotiable.** RLS predicates must appear in the logged plan *before* any connector call. M3's Rego compile-to-plan path is justified by the same logic.
-3. **`partial:true` is a feature, not an error.** Every milestone's chaos drill includes "kill one source, assert partial + other source's data returned."
-4. **Mock + live coexistence is correct, not a stopgap.** Mocks are the only way to load-test without quota, the only way unit tests stay fast, the only way demos are deterministic. Every connector ships in both modes through GA.
-5. **Cross-cutting IDs must match their tools' formats.** The prototype's 16-char `trace_id` vs Jaeger's 32-char ID cost 30 min of debugging. Every trace/job/audit ID uses the format of the tool that indexes it.
-
-## Definition of done — GA (Month 6 exit)
-
-- All M1–M6 exit criteria met.
-- 8 chaos drills pass; runbooks merged.
+- All M1–M6 exits met.
+- 8 chaos drills pass, runbooks merged.
 - External pen test: no critical, ≤2 high.
-- Third real connector (Salesforce or equivalent) onboarded by the playbook in <2h.
-- 1k QPS staging sustained 60 min for 7 consecutive days.
-- SOC 2 Type II controls inventory complete; evidence collection in progress.
-- GA launch runbook signed off by EM + Security + SRE.
+- A third real connector (Salesforce) onboarded by the playbook in <2h.
+- 1k QPS staging green 60 min × 7 days running.
+- SOC2 Type II controls inventoried, evidence collection underway.
+- GA runbook signed off by EM + Security + SRE.
 - Post-GA roadmap published so customers can plan against it.
+- **Push loop in prod:** event → SSE subscriber update in < 1 s on a
+  released connector (GitHub or Jira).
+- **Pull agent in prod:** NL→SQL ≥ 85% executable, ≥ 95% no entitlement
+  bypasses on the eval set; recommender returning suggestions on every
+  query for the alpha cohort.
+- Cockpit alpha live for 3 friendly customers, with at least one English
+  rule firing in Slack per customer per week.
