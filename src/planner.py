@@ -247,10 +247,13 @@ def plan_from_dict(spec: dict) -> QueryPlan:
         sp = SourcePlan(connector=connector, table=table, alias=alias)
         pushable = CONNECTORS[connector].pushable_filters
         for w in s.get("where", []):
-            op = w["op"]
+            try:
+                column, op, value = w["column"], w["op"], w["value"]
+            except (KeyError, TypeError):
+                raise InvalidSQL("plan where entries require column/op/value")
             if op not in _OP_MAP.values() and op != "IN":
                 raise InvalidSQL(f"unsupported op '{op}' in plan")
-            pred = Predicate(w["column"], op, w["value"])
+            pred = Predicate(column, op, value)
             (sp.pushed_predicates if pred.column in pushable
              else sp.post_predicates).append(pred)
         sources[alias] = sp
@@ -259,8 +262,11 @@ def plan_from_dict(spec: dict) -> QueryPlan:
     join_spec = None
     j = spec.get("join")
     if j:
-        join_spec = JoinSpec(j["left_alias"], j["left_column"],
-                             j["right_alias"], j["right_column"])
+        try:
+            join_spec = JoinSpec(j["left_alias"], j["left_column"],
+                                 j["right_alias"], j["right_column"])
+        except (KeyError, TypeError):
+            raise InvalidSQL("plan join requires left_alias/left_column/right_alias/right_column")
 
     select_cols: list[SelectCol] = []
     for s in raw_sources:

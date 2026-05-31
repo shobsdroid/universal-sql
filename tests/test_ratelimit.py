@@ -21,7 +21,7 @@ def test_rate_limit_returns_friendly_429(client, eng_headers):
     assert "Retry-After" in last.headers
 
 
-def test_async_overflow_returns_202_and_completes(client, eng_headers):
+def test_async_overflow_returns_202_and_completes(client, eng_headers, admin_headers):
     _deplete(client, eng_headers)
     r = client.post("/v1/query", headers=eng_headers,
                     json={**SIMPLE, "async_ok": True})
@@ -30,11 +30,15 @@ def test_async_overflow_returns_202_and_completes(client, eng_headers):
     assert body["status"] == "queued"
     job_id = body["job_id"]
 
-    # Poll until the queued job drains its rate-limit wait and executes.
+    # Job poll is owner-scoped: no token -> 401, another user -> 404.
+    assert client.get(f"/v1/jobs/{job_id}").status_code == 401
+    assert client.get(f"/v1/jobs/{job_id}", headers=admin_headers).status_code == 404
+
+    # Poll (as the owner) until the queued job drains its rate-limit wait.
     deadline = time.time() + 10
     result = None
     while time.time() < deadline:
-        jr = client.get(f"/v1/jobs/{job_id}")
+        jr = client.get(f"/v1/jobs/{job_id}", headers=eng_headers)
         data = jr.json()
         if "rows" in data:
             result = data

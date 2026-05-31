@@ -33,3 +33,16 @@ def test_missing_sql_and_plan_is_400(client, admin_headers):
     r = client.post("/v1/query", headers=admin_headers, json={"max_staleness_ms": 1000})
     assert r.status_code == 400
     assert r.json()["error"] == "INVALID_SQL"
+
+
+def test_malformed_plan_is_400_not_500(client, admin_headers):
+    # A join missing keys must yield a clean 400, not an unhandled 500.
+    r = client.post("/v1/query", headers=admin_headers, json={"plan": {
+        "sources": [
+            {"connector": "github", "table": "pull_requests", "alias": "pr", "select": ["id"]},
+            {"connector": "jira", "table": "issues", "alias": "i", "select": ["id"]},
+        ],
+        "join": {"left_alias": "pr"},
+    }})
+    assert r.status_code == 400
+    assert r.json()["error"] == "INVALID_SQL"

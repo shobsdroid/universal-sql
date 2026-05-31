@@ -28,8 +28,11 @@ def record(event: dict) -> None:
     _LOG.info(json.dumps(event, default=str))
 
 
-def recent(limit: int = 50) -> list[dict]:
-    return list(_RING)[-limit:]
+def recent(limit: int = 50, tenant_id: str | None = None) -> list[dict]:
+    events = list(_RING)
+    if tenant_id is not None:
+        events = [e for e in events if e.get("tenant_id") == tenant_id]
+    return events[-limit:]
 
 
 def clear() -> None:

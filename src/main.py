@@ -21,7 +21,7 @@ from .auth import mint_token, verify_token
 from .connectors.base import ConnectorContext
 from .connectors.jira_mock import get_registry
 from .entitlements import apply_entitlements
-from .errors import InvalidSQL, QueryError
+from .errors import EntitlementDenied, InvalidSQL, QueryError
 from .executor import execute_plan
 from .jobs import STORE
 from .observability import (
@@ -71,7 +71,7 @@ Then click **Authorize** above and paste the token.
 TAGS_METADATA = [
     {"name": "Query", "description": "Run SQL or a pre-built plan across federated connectors."},
     {"name": "Jobs", "description": "Poll async jobs created by the rate-limit async reroute."},
-    {"name": "Audit", "description": "Append-only access trail."},
+    {"name": "Audit", "description": "Append-only access trail. **Admin-only, tenant-scoped.**"},
     {"name": "Observability", "description": "Trace + Prometheus metrics exposure."},
     {"name": "Health", "description": "Liveness/readiness."},
 ]
@@ -245,10 +245,17 @@ async def metrics():
     response_model=AuditEnvelope,
     summary="Recent audit events",
     description="Append-only access trail: every query (including denials) records "
-                "user/tenant/tables/columns/RLS predicates/rows/duration.",
+                "user/tenant/tables/columns/RLS predicates/rows/duration. "
+                "**Admin-only** and **scoped to the caller's tenant.**",
+    responses=COMMON_ERROR_RESPONSES,
 )
-async def audit_trail(limit: int = 50):
-    return {"events": audit.recent(limit)}
+async def audit_trail(limit: int = 50, authorization: str = Header(default=None)):
+    # Audit/access trails are admin-only and scoped to the caller's tenant —
+    # an audit endpoint must not itself leak other tenants' access events.
+    identity = verify_token(authorization)
+    if identity.role != "admin":
+        raise EntitlementDenied("audit trail requires an admin role")
+    return {"events": audit.recent(limit, tenant_id=identity.tenant_id)}
 
 
 @app.get(
@@ -256,14 +263,22 @@ async def audit_trail(limit: int = 50):
     tags=["Observability"],
     summary="Latest in-process trace snapshot",
     description="Returns the most recent `query` span tree (Gantt-ready). Used by "
-                "`scripts/snapshot.py`.",
+                "`scripts/snapshot.py`. **Admin-only** and **scoped to the caller's tenant.**",
+    responses={**COMMON_ERROR_RESPONSES,
+               404: {"model": ErrorBody, "description": "No recent trace for the caller's tenant."}},
 )
-async def latest_trace():
+async def latest_trace(authorization: str = Header(default=None)):
+    identity = verify_token(authorization)
+    if identity.role != "admin":
+        raise EntitlementDenied("trace inspection requires an admin role")
     t = SPAN_COLLECTOR.latest_query_trace()
-    if t is None:
-        return JSONResponse(status_code=404,
-                            content={"error": "NO_TRACE", "message": "run a query first"})
-    return t
+    if t is not None:
+        root = next((s for s in t["spans"] if s["name"] == "query"), None)
+        if root and root["attributes"].get("tenant_id") == identity.tenant_id:
+            return t
+    return JSONResponse(status_code=404,
+                        content={"error": "NO_TRACE",
+                                 "message": "no recent trace for your tenant"})
 
 
 @app.get(
@@ -465,14 +480,20 @@ async def query(req: QueryRequest, request: Request, authorization: str = Header
     "/v1/jobs/{job_id}",
     tags=["Jobs"],
     summary="Poll an async query job",
-    description="Completed jobs return the full query response shape.",
-    responses={200: {"model": JobStatus, "description": "Job status, or the completed `QueryResponse` once `status:done`."},
-               404: {"model": ErrorBody, "description": "Job not found."},
+    description="Owner-scoped: only the tenant+user that created the job can read it. "
+                "Returns `404 JOB_NOT_FOUND` rather than `403` on mismatch so existence "
+                "isn't leaked across tenants. Completed jobs return the full query response shape.",
+    responses={**COMMON_ERROR_RESPONSES,
+               200: {"model": JobStatus, "description": "Job status, or the completed `QueryResponse` once `status:done`."},
+               404: {"model": ErrorBody, "description": "Job not found (or not owned by caller)."},
                502: {"model": ErrorBody, "description": "Job failed during execution."}},
 )
-async def get_job(job_id: str):
+async def get_job(job_id: str, authorization: str = Header(default=None)):
+    identity = verify_token(authorization)
     job = STORE.get(job_id)
-    if job is None:
+    # Owner-scoped: a job is only visible to the tenant+user that created it.
+    # Return 404 (not 403) on mismatch so job existence isn't leaked cross-tenant.
+    if job is None or job.tenant_id != identity.tenant_id or job.user_id != identity.user_id:
         return JSONResponse(status_code=404, content={"error": "JOB_NOT_FOUND", "job_id": job_id})
     if job.status == "done":
         return job.result

@@ -25,6 +25,8 @@ _POLL_INTERVAL_S = 0.5
 class Job:
     job_id: str
     trace_id: str
+    tenant_id: str                  # owner — enforced on poll
+    user_id: str
     status: str = "queued"          # queued | running | done | failed
     result: dict | None = None
     error: str | None = None
@@ -41,7 +43,8 @@ class JobStore:
     def enqueue(self, plan: QueryPlan, ctx: ConnectorContext, registry: dict,
                 connectors: list[str], trace_id: str,
                 max_staleness_ms: int | None) -> Job:
-        job = Job(job_id=uuid.uuid4().hex, trace_id=trace_id)
+        job = Job(job_id=uuid.uuid4().hex, trace_id=trace_id,
+                  tenant_id=ctx.tenant_id, user_id=ctx.user_id)
         self._jobs[job.job_id] = job
         asyncio.create_task(
             self._run(job, plan, ctx, registry, connectors, max_staleness_ms))
